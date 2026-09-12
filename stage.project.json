@@ -1,0 +1,78 @@
+{
+  "name": "TitanStrike-Stage",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "src/shared"
+      }
+    },
+
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/stage/server"
+      }
+    },
+
+    "ServerStorage": {
+      "DataTable": {
+        "$path": "src/datatable"
+      }
+    },
+
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "Client": {
+          "$path": "src/stage/client"
+        }
+      }
+    },
+
+    "StarterGui": {
+      "GameScreenGui": {
+        "$path": "src/stage/gui/GameScreenGui.rbxm"
+      },
+      "PopupScreenGui": {
+        "$path": "src/stage/gui/PopupScreenGui.rbxm"
+      }
+    },
+
+    "ReplicatedFirst": {
+      "LoadingScreenGui": {
+        "$path": "src/stage/gui/LoadingScreenGui.rbxm"
+      }
+    },
+
+    "Workspace": {
+      "$properties": {
+        "FilteringEnabled": true,
+        "StreamingEnabled": true,
+        "StreamingMinRadius": 256,
+        "StreamingTargetRadius": 512
+      }
+    },
+
+    "Lighting": {
+      "$properties": {
+        "Ambient": [0, 0, 0],
+        "Brightness": 2,
+        "GlobalShadows": true,
+        "Outlines": false,
+        "Technology": "Voxel"
+      }
+    },
+    
+    "SoundService": {
+      "$properties": {
+        "RespectFilteringEnabled": true
+      }
+    },
+
+    "HttpService": {
+      "$properties": {
+        "HttpEnabled": true
+      }
+    }
+  }
+}

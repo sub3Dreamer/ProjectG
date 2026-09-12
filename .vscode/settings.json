@@ -1,0 +1,6 @@
+{
+  "rojo.projectFile": "default.project.json",
+  "terminal.integrated.env.windows": {
+    "Path": "${env:USERPROFILE}\\.aftman\\bin;${env:Path}"
+  }
+}

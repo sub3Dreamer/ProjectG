@@ -1,0 +1,62 @@
+{
+    "name": "TitanStrike-Lobby",
+    "tree": {
+      "$className": "DataModel",
+  
+      "ReplicatedStorage": {
+        "Shared": {
+          "$path": "src/shared"
+        }
+      },
+  
+      "ServerScriptService": {
+        "Server": {
+          "$path": "src/lobby/server"
+        }
+      },
+  
+      "ServerStorage": {
+        "DataTable": {
+          "$path": "src/datatable"
+        }
+      },
+  
+      "StarterPlayer": {
+        "StarterPlayerScripts": {
+          "Client": {
+            "$path": "src/lobby/client"
+          }
+        }
+      },
+  
+      "StarterGui": {
+        "LobbyScreenGui": {
+          "$path": "src/lobby/gui/LobbyScreenGui.rbxm"
+        },
+        "PopupScreenGui": {
+          "$path": "src/lobby/gui/PopupScreenGui.rbxm"
+        }
+      },
+  
+      "Workspace": {
+        "$properties": {
+          "FilteringEnabled": true,
+          "StreamingEnabled": true,
+          "StreamingMinRadius": 256,
+          "StreamingTargetRadius": 512
+        }
+      },
+      
+      "SoundService": {
+        "$properties": {
+          "RespectFilteringEnabled": true
+        }
+      },
+
+      "HttpService": {
+        "$properties": {
+          "HttpEnabled": true
+        }
+      }
+    }
+  }
