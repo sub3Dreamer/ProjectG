@@ -17,6 +17,7 @@ PopupManager.PopupId = {
 	Relic = "Relic",
 	LevelUp = "LevelUp",
 	Costume = "Costume",
+	Pvp = "Pvp",
 }
 
 export type PopupModule = {

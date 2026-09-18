@@ -2,7 +2,7 @@
 	PortalUI (lobby client)
 
 	ReplicatedStorage.Client.PortalUI.BillboardGui 를 템플릿으로 사용해
-	Workspace 안 Portal=true 모델마다 BillboardGui 를 PlayerGui 에 복제 배치한다.
+	Workspace.Portal 폴더 안 Portal=true 모델마다 BillboardGui 를 PlayerGui 에 복제 배치한다.
 
 	BillboardGui 가 PlayerGui 에 있어야 안의 GuiButton(ExitButton) 입력이 라우팅된다
 	(Roblox 사양). Adornee 는 포털 모델 하위 이름이 "Body" 인 BasePart 를 우선 사용하고,
@@ -10,14 +10,12 @@
 
 	PlaceIds.Stages[StageNumber] 가 없거나 0 이면 BillboardGui 를 만들지 않음 (미연결 스테이지 포털 숨김).
 
-	페데스탈 단위 동작 (자기 stage/diff 와 일치할 때만 활성 표시):
-		Idle               → StatusText "0 / {JoinCnt}" (포털 모델 JoinCnt 특성, 1~5)
-		PopupOpen(매칭)    → StatusText "제작 중...", Timer/Exit 숨김
-		PopupOpen(비매칭)  → Idle 표시
-		Recruiting(매칭)   → StatusText "N/cap", Timer "M:SS", Exit (멤버일 때만)
-		Recruiting(비매칭) → Idle 표시
-		Teleporting(매칭)  → StatusText "순간 이동 중...", Timer/Exit 숨김
-		Teleporting(비매칭)→ Idle 표시
+	StageNumber ~= 2 (파티, Difficulty):
+		Idle / PopupOpen / Recruiting / Teleporting — stage+difficulty 매칭
+
+	StageNumber == 2 (PVP, Team Red/Blue + PortalNumber):
+		Idle / Recruiting / Teleporting — stage+portalNumber+team 매칭
+		StatusText "N / JoinCnt" (해당 팀 현황). ExitButton 은 항상 숨김.
 ]]
 
 local PortalUI = {}
@@ -29,6 +27,7 @@ local RunService = game:GetService("RunService")
 
 local LOBBY_PARTY_STATE_EVENT_NAME = "LobbyPartyStateEvent"
 local LEAVE_ROOM_EVENT_NAME = "LeaveRoomRequestEvent"
+local PVP_STAGE_NUMBER = 2
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local PlaceIds = require(Shared.Config.PlaceIds)
@@ -38,6 +37,7 @@ local PortalWarp = require(script.Parent.PortalWarp)
 
 local TEMPLATE_PARENT_NAMES = { "Client", "PortalUI" }
 local TEMPLATE_NAME = "BillboardGui"
+local PORTAL_FOLDER_NAME = "Portal"
 
 local STATE_IDLE = "Idle"
 local STATE_POPUP = "PopupOpen"
@@ -49,7 +49,10 @@ local LOCALE = "kr"
 type Pedestal = {
 	model: Instance,
 	stage: number,
-	difficulty: number,
+	difficulty: number?,
+	team: string?,
+	portalNumber: number?,
+	isPvp: boolean,
 	joinCnt: number,
 	joinCntAttrConn: RBXScriptConnection?,
 	billboardGui: BillboardGui,
@@ -76,28 +79,22 @@ local function isPortalModel(inst: Instance): boolean
 	return inst:GetAttribute("Portal") == true
 end
 
---[[
-	BillboardGui.Adornee 가 붙을 월드 파트.
-	스튜디오에서 포털(SciFiPedestal 등)마다 발광 원판 등으로 "Body" Part 를 두고,
-	빌보드가 그 위치·크기에 맞춰 뜨도록 고정한다.
-	(이전: PrimaryPart·자식 순 등으로 잡히면 어떤 메시 파트가 잡혀 보일 위치가 들쭉날쭉했음)
-]]
+local function isValidTeam(team: any): boolean
+	return team == "Red" or team == "Blue"
+end
+
 local ADORNEE_PART_NAME = "Body"
 
---- Portal=true 인 Model(BasePart)에서 Adornee용 BasePart 를 고른다.
 local function findAdorneePart(model: Instance): BasePart?
-	-- 포털 루트가 단일 Part 인 경우 그 자체
 	if model:IsA("BasePart") then
 		return model :: BasePart
 	end
 	if model:IsA("Model") then
 		local m = model :: Model
-		-- 1순위: 모델 트리 안 이름이 Body 인 Part (직계·하위 공통, FindFirstChild 재귀)
 		local body = m:FindFirstChild(ADORNEE_PART_NAME, true)
 		if body and body:IsA("BasePart") then
 			return body :: BasePart
 		end
-		-- 폴백: 레벨에 Body 가 없을 때만 기존 규칙
 		if m.PrimaryPart then
 			return m.PrimaryPart
 		end
@@ -107,27 +104,27 @@ local function findAdorneePart(model: Instance): BasePart?
 		end
 		for _, c in m:GetChildren() do
 			if c:IsA("BasePart") then
-				return c :: BasePart
+				return c
 			end
 		end
 		for _, d in m:GetDescendants() do
 			if d:IsA("BasePart") then
-				return d :: BasePart
+				return d
 			end
 		end
 	end
 	return nil
 end
 
-local function readJoinCntFromPortal(model: Instance): number
+local function readJoinCntFromPortal(model: Instance, isPvp: boolean): number
+	local maxCap = if isPvp then 2 else 5
 	local j = model:GetAttribute("JoinCnt")
 	if typeof(j) == "number" then
-		return math.clamp(math.floor(j), 1, 5)
+		return math.clamp(math.floor(j), 1, maxCap)
 	end
-	return 5
+	return maxCap
 end
 
---- RoomManager.getStagePlaceId 와 동일 기준: Stages 테이블에 유효한 PlaceId 가 있을 때만 UI 표시.
 local function hasConfiguredStagePlace(stageNumber: number): boolean
 	if typeof(stageNumber) ~= "number" or stageNumber < 1 then
 		return false
@@ -155,6 +152,25 @@ local function isLocalPlayerInMembers(state: any): boolean
 	return false
 end
 
+local function pedestalMatchesState(p: Pedestal, state: any): boolean
+	if not state then
+		return false
+	end
+	if p.stage ~= state.stageNumber then
+		return false
+	end
+	if p.isPvp then
+		if p.team == nil or p.team ~= state.team then
+			return false
+		end
+		if p.portalNumber == nil or p.portalNumber ~= state.portalNumber then
+			return false
+		end
+		return true
+	end
+	return p.difficulty ~= nil and p.difficulty == state.difficulty
+end
+
 -- --- pedestal 단일 표시 헬퍼 ---
 
 local function applyIdle(p: Pedestal)
@@ -173,10 +189,15 @@ end
 
 local function applyRecruitingMatching(p: Pedestal, state: any)
 	p.statusText.Visible = true
-	p.statusText.Text = string.format("%d / %d", state.current or 0, state.capacity or 0)
-	p.timerText.Visible = true
-	-- timerText 의 실제 시간 텍스트는 매 프레임 updateCountdowns 에서 갱신
-	p.exitButton.Visible = isLocalPlayerInMembers(state)
+	p.statusText.Text = string.format("%d / %d", state.current or 0, state.capacity or p.joinCnt)
+	-- PVP 는 모집 타이머·Exit 없음 (StatusText 만 갱신)
+	if p.isPvp then
+		p.timerText.Visible = false
+		p.exitButton.Visible = false
+	else
+		p.timerText.Visible = true
+		p.exitButton.Visible = isLocalPlayerInMembers(state)
+	end
 end
 
 local function applyTeleportingMatching(p: Pedestal)
@@ -191,7 +212,7 @@ local function applyStateToPedestal(p: Pedestal, state: any)
 		applyIdle(p)
 		return
 	end
-	local matches = (p.stage == state.stageNumber) and (p.difficulty == state.difficulty)
+	local matches = pedestalMatchesState(p, state)
 	if state.state == STATE_POPUP then
 		if matches then
 			applyPopupMatching(p)
@@ -215,7 +236,6 @@ local function applyStateToPedestal(p: Pedestal, state: any)
 	end
 end
 
---- 서버가 보낸 payload.portal 과 같은 모델의 페데스탈만 갱신(다른 포탈에 영향 없음).
 local function applyStateToPortal(state: any)
 	if not (state and state.portal) then
 		return
@@ -229,22 +249,20 @@ local function applyStateToPortal(state: any)
 	end
 end
 
--- --- 카운트다운 (Recruiting 의 TimerText 만 매 프레임 갱신) ---
-
 local function updateCountdowns()
 	for _, p in ipairs(pedestals) do
-		local s = p.lastState
-		if s and s.state == STATE_RECRUITING and s.recruitDeadline then
-			local remaining = (s.recruitDeadline :: number) - workspace:GetServerTimeNow()
-			if remaining < 0 then
-				remaining = 0
+		if not p.isPvp then
+			local s = p.lastState
+			if s and s.state == STATE_RECRUITING and s.recruitDeadline then
+				local remaining = (s.recruitDeadline :: number) - workspace:GetServerTimeNow()
+				if remaining < 0 then
+					remaining = 0
+				end
+				p.timerText.Text = formatMmSs(remaining)
 			end
-			p.timerText.Text = formatMmSs(remaining)
 		end
 	end
 end
-
--- --- 페데스탈 정리 ---
 
 local function unbindPedestal(model: Instance)
 	if not boundModels[model] then
@@ -266,8 +284,6 @@ local function unbindPedestal(model: Instance)
 	end
 end
 
--- --- 페데스탈 바인딩 ---
-
 local function bindPedestal(model: Instance)
 	if boundModels[model] then
 		return
@@ -280,15 +296,36 @@ local function bindPedestal(model: Instance)
 	end
 
 	local stage = model:GetAttribute("StageNumber")
-	local difficulty = model:GetAttribute("Difficulty")
-	if typeof(stage) ~= "number" or typeof(difficulty) ~= "number" then
+	if typeof(stage) ~= "number" then
 		return
 	end
 	if not hasConfiguredStagePlace(stage) then
 		return
 	end
 
-	-- 월드 기준으로 빌보드가 따라갈 파트 (우선 Body, 없으면 findAdorneePart 폴백)
+	local isPvp = isValidTeam(model:GetAttribute("Team")) or stage == PVP_STAGE_NUMBER
+	local difficulty: number? = nil
+	local team: string? = nil
+	local portalNumber: number? = nil
+	if isPvp then
+		local t = model:GetAttribute("Team")
+		if not isValidTeam(t) then
+			return
+		end
+		team = t :: string
+		local pn = model:GetAttribute("PortalNumber")
+		if typeof(pn) ~= "number" or pn < 1 then
+			return
+		end
+		portalNumber = math.floor(pn)
+	else
+		local d = model:GetAttribute("Difficulty")
+		if typeof(d) ~= "number" then
+			return
+		end
+		difficulty = d
+	end
+
 	local adornee = findAdorneePart(model)
 	if not adornee then
 		warn("[PortalUI] Adornee 로 사용할 BasePart 없음:", model:GetFullName())
@@ -296,8 +333,12 @@ local function bindPedestal(model: Instance)
 	end
 
 	local bg = (templateBillboard :: BillboardGui):Clone()
-	bg.Name = string.format("PortalBillboard_S%d_D%d", stage, difficulty)
-	bg.Adornee = adornee -- PlayerGui 안에 있어도 월드 위치는 이 Part 기준
+	if isPvp then
+		bg.Name = string.format("PortalBillboard_S%d_P%d_%s", stage, portalNumber, team)
+	else
+		bg.Name = string.format("PortalBillboard_S%d_D%d", stage, difficulty)
+	end
+	bg.Adornee = adornee
 	bg.Active = true
 
 	local statusInst = bg:FindFirstChild("StatusText")
@@ -321,12 +362,15 @@ local function bindPedestal(model: Instance)
 
 	bg.Parent = playerGui
 
-	local joinCnt = readJoinCntFromPortal(model)
+	local joinCnt = readJoinCntFromPortal(model, isPvp)
 
 	local pedestal: Pedestal = {
 		model = model,
 		stage = stage,
 		difficulty = difficulty,
+		team = team,
+		portalNumber = portalNumber,
+		isPvp = isPvp,
 		joinCnt = joinCnt,
 		joinCntAttrConn = nil,
 		billboardGui = bg,
@@ -339,16 +383,23 @@ local function bindPedestal(model: Instance)
 	boundModels[model] = true
 
 	pedestal.joinCntAttrConn = model:GetAttributeChangedSignal("JoinCnt"):Connect(function()
-		pedestal.joinCnt = readJoinCntFromPortal(model)
+		pedestal.joinCnt = readJoinCntFromPortal(model, isPvp)
 		applyStateToPedestal(pedestal, pedestal.lastState)
 	end)
 
-	pedestal.exitButton.Activated:Connect(function()
-		if leaveRoomEvent then
-			leaveRoomEvent:FireServer()
-		end
-		PortalWarp.warpLocalPlayerToMatch(pedestal.stage, pedestal.difficulty)
-	end)
+	-- PVP: Billboard Exit 미사용 (팝업에서만 퇴장). 파티만 Exit 연결.
+	if not isPvp then
+		pedestal.exitButton.Activated:Connect(function()
+			if leaveRoomEvent then
+				leaveRoomEvent:FireServer()
+			end
+			if pedestal.difficulty then
+				PortalWarp.warpLocalPlayerToMatch(pedestal.stage, pedestal.difficulty)
+			end
+		end)
+	else
+		pedestal.exitButton.Visible = false
+	end
 
 	model.AncestryChanged:Connect(function(_, parent)
 		if parent == nil then
@@ -357,27 +408,48 @@ local function bindPedestal(model: Instance)
 	end)
 
 	applyStateToPedestal(pedestal, pedestal.lastState)
-	print(
-		string.format(
-			"[PortalUI] 페데스탈 등록: %s (stage=%d, diff=%d, joinCnt=%d, adornee=%s)",
-			model:GetFullName(),
-			stage,
-			difficulty,
-			pedestal.joinCnt,
-			adornee:GetFullName()
+	if isPvp then
+		print(
+			string.format(
+				"[PortalUI] PVP 페데스탈 등록: %s (stage=%d, portalNumber=%d, team=%s, joinCnt=%d, adornee=%s)",
+				model:GetFullName(),
+				stage,
+				portalNumber :: number,
+				tostring(team),
+				pedestal.joinCnt,
+				adornee:GetFullName()
+			)
 		)
-	)
+	else
+		print(
+			string.format(
+				"[PortalUI] 페데스탈 등록: %s (stage=%d, diff=%d, joinCnt=%d, adornee=%s)",
+				model:GetFullName(),
+				stage,
+				difficulty :: number,
+				pedestal.joinCnt,
+				adornee:GetFullName()
+			)
+		)
+	end
 end
 
-local function scanAll()
-	for _, d in Workspace:GetDescendants() do
+local function resolvePortalFolder(): Folder?
+	local folder = Workspace:WaitForChild(PORTAL_FOLDER_NAME, 10)
+	if not (folder and folder:IsA("Folder")) then
+		warn("[PortalUI] Workspace.", PORTAL_FOLDER_NAME, " 폴더 없음")
+		return nil
+	end
+	return folder :: Folder
+end
+
+local function scanAll(portalFolder: Folder)
+	for _, d in portalFolder:GetDescendants() do
 		if isPortalModel(d) then
 			bindPedestal(d)
 		end
 	end
 end
-
--- --- 템플릿 로드 ---
 
 local function resolveTemplate(): BillboardGui?
 	local node: Instance = ReplicatedStorage
@@ -397,8 +469,6 @@ local function resolveTemplate(): BillboardGui?
 	return tpl :: BillboardGui
 end
 
--- --- public ---
-
 function PortalUI.init()
 	if initialized then
 		return
@@ -412,18 +482,21 @@ function PortalUI.init()
 		if not templateBillboard then
 			return
 		end
-		scanAll()
-		Workspace.DescendantAdded:Connect(function(d: Instance)
+		local portalFolder = resolvePortalFolder()
+		if not portalFolder then
+			return
+		end
+		scanAll(portalFolder)
+		portalFolder.DescendantAdded:Connect(function(d: Instance)
 			if isPortalModel(d) then
 				bindPedestal(d)
 			end
 		end)
-	end)
-
-	Workspace.DescendantRemoving:Connect(function(d: Instance)
-		if boundModels[d] then
-			unbindPedestal(d)
-		end
+		portalFolder.DescendantRemoving:Connect(function(d: Instance)
+			if boundModels[d] then
+				unbindPedestal(d)
+			end
+		end)
 	end)
 
 	task.spawn(function()

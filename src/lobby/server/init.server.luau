@@ -12,6 +12,7 @@ local DataManager = require(Shared.Managers.DataManager)
 local GameManager = require(Shared.Managers.GameManager)
 local LobbyManager = require(script.LobbyManager)
 local RoomManager = require(script.RoomManager)
+local PvpRoomManager = require(script.PvpRoomManager)
 local PortalHandler = require(script.PortalHandler)
 local LobbyPhysicsSetup = require(script.LobbyPhysicsSetup)
 local DailyRewardHelper = require(Shared.Helpers.DailyRewardHelper)
@@ -48,6 +49,7 @@ end
 
 LobbyManager.init()
 RoomManager.init()
+PvpRoomManager.init()
 LobbyPhysicsSetup.init()
 PortalHandler.init()
 

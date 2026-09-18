@@ -2,21 +2,28 @@
 	PortalHandler (lobby-only)
 
 	Workspace에서 attribute Portal=true 인 Model/BasePart 를 찾아
-	플레이어가 "처음 올라서는 순간"에만 RoomManager.tryStartParty 를 호출.
+	플레이어가 "처음 올라서는 순간"에만 매치 입장을 시도한다.
 
-	기대 attribute:
+	기대 attribute (공통):
 		- Portal       : bool   (true 인 인스턴스만 후킹)
 		- StageNumber  : number (1~)
+		- JoinCnt      : number (1~5; Stage2 팀은 1~2)
+
+	StageNumber ~= 2 (파티):
 		- Difficulty   : number (1=쉬움, 2=일반, 3=어려움)
-		- JoinCnt      : number (1~5, 파티 팝업 최대 정원·토글 개수; 없으면 기본 5)
+		→ RoomManager.tryStartParty
+
+	StageNumber == 2 (PVP):
+		- Team         : string ("Red" | "Blue")  — Difficulty 대신 사용
+		- PortalNumber : number — 같은 번호의 Red/Blue 포탈이 한 방을 공유
+		→ PvpRoomManager.tryJoin + PvpPopup
 
 	Model 인 경우 자식 중 "TouchPart"가 있으면 그것만, 없으면 모델 내 모든 BasePart에 연결.
 
 	enter 감지:
 		Touched/TouchEnded 의 캐릭터 Part 카운트를 (portal, userId) 단위로 기록.
-		count: 0 → 1 변환 시점에만 tryStartParty 호출 (또는 PopupOpen 비리더 / Teleporting 비멤버면 해당 포탈 WarpPoint 로 서버 이동만).
+		count: 0 → 1 변환 시점에만 try* 호출 (또는 PopupOpen 비리더 / Teleporting 비멤버면 해당 포탈 WarpPoint 로 서버 이동만).
 		플레이어가 페데스탈에서 완전히 내려가야(count == 0) 다시 enter 가능.
-		→ 팝업 닫은 후 같은 자리에 서 있으면 재트리거되지 않음.
 ]]
 
 local PortalHandler = {}
@@ -29,18 +36,24 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local LobbyPhysicsGroups = require(Shared.Config.LobbyPhysicsGroups)
 
 local RoomManager = require(script.Parent.RoomManager)
+local PvpRoomManager = require(script.Parent.PvpRoomManager)
 
 local ATTR_LOCK_WALL = LobbyPhysicsGroups.ATTR_LOCK_WALL
 local WARP_POINT_NAME = "WarpPoint"
+-- PvpRoomManager 상수에 의존하지 않고 고정 (require 타이밍으로 nil 비교되면 Difficulty 분기로 떨어지는 것 방지)
+local PVP_STAGE = 2
 
 local function isLockWall(inst: Instance): boolean
 	return inst:GetAttribute(ATTR_LOCK_WALL) == true
 end
 
+local function isValidTeam(team: any): boolean
+	return team == "Red" or team == "Blue"
+end
+
 local boundInstances: { [Instance]: boolean } = {}
 
 -- (portalInstance) -> ( userId -> 접촉 중인 캐릭터 BasePart 의 set )
--- 동일 포털을 여러 캐릭터 Part 가 동시에 밟아도 "처음 올라설 때만" tryStartParty 가 호출되도록 카운팅.
 local contactPartsByPortal: { [Instance]: { [number]: { [BasePart]: boolean } } } = {}
 
 local function isPortalInstance(inst: Instance): boolean
@@ -110,6 +123,52 @@ local function warpCharacterToPortalWarpPoint(char: Model, portal: Instance): bo
 	return true
 end
 
+local function readJoinCnt(portal: Instance, maxCap: number): number
+	local joinRaw = portal:GetAttribute("JoinCnt")
+	if typeof(joinRaw) == "number" then
+		return math.clamp(math.floor(joinRaw), 1, maxCap)
+	end
+	warn("[PortalHandler] JoinCnt(number) 없음 → 기본", maxCap, "사용:", portal:GetFullName())
+	return maxCap
+end
+
+local function onPvpPortalTouched(portal: Instance, player: Player, char: Model, team: string)
+	local stage = PVP_STAGE
+	local joinCnt = readJoinCnt(portal, 2)
+	local portalNumber = portal:GetAttribute("PortalNumber")
+	if typeof(portalNumber) ~= "number" or portalNumber < 1 then
+		warn("[PortalHandler] PVP 포탈 PortalNumber(number) 누락:", portal:GetFullName())
+		return
+	end
+	portalNumber = math.floor(portalNumber)
+
+	if PvpRoomManager.shouldEjectToWarpPointDuringTeleporting(player, portal, stage, team :: any, portalNumber) then
+		warpCharacterToPortalWarpPoint(char, portal)
+		return
+	end
+	PvpRoomManager.tryJoin(player, portal, stage, team :: any, joinCnt, portalNumber)
+end
+
+local function onPartyPortalTouched(
+	portal: Instance,
+	player: Player,
+	char: Model,
+	stage: number,
+	difficulty: number
+)
+	local joinCnt = readJoinCnt(portal, 5)
+
+	if RoomManager.shouldEjectToWarpPointDuringPopup(player, portal, stage, difficulty) then
+		warpCharacterToPortalWarpPoint(char, portal)
+		return
+	end
+	if RoomManager.shouldEjectToWarpPointDuringTeleporting(player, portal, stage, difficulty) then
+		warpCharacterToPortalWarpPoint(char, portal)
+		return
+	end
+	RoomManager.tryStartParty(player, portal, stage, difficulty, joinCnt)
+end
+
 local function onPortalTouched(portal: Instance, hit: BasePart)
 	if not hit or not hit:IsA("BasePart") then
 		return
@@ -124,17 +183,8 @@ local function onPortalTouched(portal: Instance, hit: BasePart)
 	end
 
 	local stage = portal:GetAttribute("StageNumber")
-	local difficulty = portal:GetAttribute("Difficulty")
-	if typeof(stage) ~= "number" or typeof(difficulty) ~= "number" then
+	if typeof(stage) ~= "number" then
 		return
-	end
-
-	local joinRaw = portal:GetAttribute("JoinCnt")
-	local joinCnt = 5
-	if typeof(joinRaw) == "number" then
-		joinCnt = math.clamp(math.floor(joinRaw), 1, 5)
-	else
-		warn("[PortalHandler] JoinCnt(number) 없음 → 기본 5 사용:", portal:GetFullName())
 	end
 
 	local portalMap = getOrCreatePortalMap(portal)
@@ -148,21 +198,30 @@ local function onPortalTouched(portal: Instance, hit: BasePart)
 	end
 	local wasEmpty = next(set) == nil
 	set[hit] = true
-	if wasEmpty then
-		if RoomManager.shouldEjectToWarpPointDuringPopup(player, portal, stage, difficulty) then
-			if char:IsA("Model") then
-				warpCharacterToPortalWarpPoint(char :: Model, portal)
-			end
-			return
-		end
-		if RoomManager.shouldEjectToWarpPointDuringTeleporting(player, portal, stage, difficulty) then
-			if char:IsA("Model") then
-				warpCharacterToPortalWarpPoint(char :: Model, portal)
-			end
-			return
-		end
-		RoomManager.tryStartParty(player, portal, stage, difficulty, joinCnt)
+	if not wasEmpty then
+		return
 	end
+	if not char:IsA("Model") then
+		return
+	end
+
+	-- Team 이 있으면 Difficulty 없이 PVP 경로 (StageNumber 비교 실패로 파티 분기 타는 것 방지)
+	local team = portal:GetAttribute("Team")
+	if isValidTeam(team) then
+		onPvpPortalTouched(portal, player, char :: Model, team :: string)
+		return
+	end
+
+	if stage == PVP_STAGE then
+		-- Stage2 인데 Team 미설정 → 입장 불가
+		return
+	end
+
+	local difficulty = portal:GetAttribute("Difficulty")
+	if typeof(difficulty) ~= "number" then
+		return
+	end
+	onPartyPortalTouched(portal, player, char :: Model, stage, difficulty)
 end
 
 local function onPortalTouchEnded(portal: Instance, hit: BasePart)
@@ -213,10 +272,31 @@ local function bindPortal(inst: Instance)
 	end
 
 	local stage = inst:GetAttribute("StageNumber")
-	local difficulty = inst:GetAttribute("Difficulty")
-	if typeof(stage) ~= "number" or typeof(difficulty) ~= "number" then
-		warn("[PortalHandler] StageNumber/Difficulty(number) 누락:", inst:GetFullName())
+	if typeof(stage) ~= "number" then
+		warn("[PortalHandler] StageNumber(number) 누락:", inst:GetFullName())
 		return
+	end
+
+	local team = inst:GetAttribute("Team")
+	local pvp = isValidTeam(team) or stage == PVP_STAGE
+
+	if pvp then
+		-- PVP: Difficulty 불필요. Team(Red/Blue) + PortalNumber 필수.
+		if not isValidTeam(team) then
+			warn("[PortalHandler] Stage2/PVP 포탈에 Team(Red/Blue) 누락:", inst:GetFullName())
+			return
+		end
+		local portalNumber = inst:GetAttribute("PortalNumber")
+		if typeof(portalNumber) ~= "number" or portalNumber < 1 then
+			warn("[PortalHandler] PVP 포탈에 PortalNumber(number) 누락:", inst:GetFullName())
+			return
+		end
+	else
+		local difficulty = inst:GetAttribute("Difficulty")
+		if typeof(difficulty) ~= "number" then
+			warn("[PortalHandler] Difficulty(number) 누락:", inst:GetFullName())
+			return
+		end
 	end
 
 	local parts = collectTouchParts(inst)
@@ -242,15 +322,28 @@ local function bindPortal(inst: Instance)
 	end)
 
 	boundInstances[inst] = true
-	print(
-		string.format(
-			"[PortalHandler] 포털 등록: %s (stage=%d, diff=%d, parts=%d)",
-			inst:GetFullName(),
-			stage,
-			difficulty,
-			#parts
+	if pvp then
+		print(
+			string.format(
+				"[PortalHandler] PVP 포털 등록: %s (stage=%d, team=%s, portalNumber=%d, parts=%d)",
+				inst:GetFullName(),
+				stage,
+				tostring(team),
+				math.floor(inst:GetAttribute("PortalNumber") :: number),
+				#parts
+			)
 		)
-	)
+	else
+		print(
+			string.format(
+				"[PortalHandler] 포털 등록: %s (stage=%d, diff=%d, parts=%d)",
+				inst:GetFullName(),
+				stage,
+				inst:GetAttribute("Difficulty") :: number,
+				#parts
+			)
+		)
+	end
 end
 
 local function scanAll()
@@ -276,7 +369,6 @@ function PortalHandler.init()
 
 	Players.PlayerAdded:Connect(function(player)
 		player.CharacterRemoving:Connect(function()
-			-- 캐릭터 사망/리셋 시 잔존 카운트 정리 (TouchEnded 누락 방어)
 			clearAllContactsForPlayer(player.UserId)
 		end)
 	end)

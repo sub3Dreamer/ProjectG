@@ -108,6 +108,26 @@ local rooms: { [string]: Room } = {}
 local userIdToRoomId: { [number]: string } = {}
 local roomIdSerial = 0
 
+function RoomManager.isPlayerInRoom(userId: number): boolean
+	return userIdToRoomId[userId] ~= nil
+end
+
+-- PvpRoomManager 순환 참조 방지: 호출 시점에 lazy require
+local function isInPvpMatch(userId: number): boolean
+	local ok, PvpRoomManager = pcall(function()
+		return require(script.Parent.PvpRoomManager)
+	end)
+	if not ok or typeof(PvpRoomManager) ~= "table" then
+		return false
+	end
+	local fn = (PvpRoomManager :: any).isPlayerInMatch
+	if typeof(fn) ~= "function" then
+		return false
+	end
+	return fn(userId) == true
+end
+
+
 --- 포탈 인스턴스 -> 그 포탈의 파티 상태. 포탈마다 완전히 독립적으로 운영된다.
 local portalStates: { [Instance]: PortalState } = {}
 --- PopupOpen 리더가 다른 포탈로 이동했을 때 이전 포탈을 정리하기 위한 역참조.
@@ -569,10 +589,11 @@ function RoomManager.tryStartParty(
 	local ps = getOrCreatePortalState(portal)
 
 	if ps.lobbyState == STATE_IDLE then
-		-- 이미 다른 방(Recruiting/Teleporting)에 속해 있으면 새 파티를 시작할 수 없음.
-		if userIdToRoomId[player.UserId] then
+		-- 이미 다른 방(Recruiting/Teleporting) 또는 PVP 매치에 속해 있으면 새 파티를 시작할 수 없음.
+		if userIdToRoomId[player.UserId] or isInPvpMatch(player.UserId) then
 			return false
 		end
+
 
 		-- 리더가 (자신이 PopupOpen 중인) 다른 포탈에서 이 포탈로 이동: 이전 포탈은 정리.
 		local prevPortal = leaderPortal[player.UserId]
